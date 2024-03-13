@@ -87,6 +87,7 @@ void kernel_start(void) {
             if (i == kernel.current_task) continue;     // do not allow any task to execute twice in a row unless no other tasks are active
 
             kernel_time_t remaining_time = kernel.tasks[i].deadline - time;
+            if (remaining_time & 0xf0000000) remaining_time = 0;                // the task missed its deadline (remaining time negative)
 
             if (remaining_time < lowest_val) {
 
@@ -103,6 +104,7 @@ void kernel_start(void) {
 void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_period) {
 
     if (kernel.task_count >= KERNEL_MAX_TASKS) return;
+    if (execution_period == 0) execution_period = 1;
 
     // set the task Process Stack Pointer to the end of the task's stack and allocate 17 words for preloading the exception frame
     uint32_t* task_psp = kernel.tasks[kernel.task_count].stack + KERNEL_TASK_STACK_SIZE - 17;
@@ -116,7 +118,7 @@ void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_peri
     
     kernel.tasks[kernel.task_count].psp = task_psp;
     kernel.tasks[kernel.task_count].period = execution_period;
-    kernel.tasks[kernel.task_count].deadline = execution_period;
+    kernel.tasks[kernel.task_count].deadline = kernel_get_time_ms() + execution_period;
     kernel.task_count++;
 }
 
