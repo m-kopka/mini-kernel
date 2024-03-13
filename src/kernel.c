@@ -1,7 +1,8 @@
 #include "kernel.h"
 
 /*
- *  Lightweight cooperative real-time operating system
+ *  Mini Kernel
+ *  Lightweight cooperative real-time operating system kernel
  *  Martin Kopka 2023
 */ 
 
@@ -24,8 +25,7 @@ void      __kernel_terminate_current_task(void);
 
 typedef struct {
 
-    uint32_t stack[KERNEL_TASK_STACK_SIZE];     // task's stack
-    uint32_t *psp;                              // task's process stack pointer
+    uint32_t *psp;                 // task's process stack pointer (caution: the stack must stay allocated)
     kernel_time_t period;          // execution period, kernel tries to resume task's execution within this time window [ms]
     kernel_time_t deadline;        // absolute time value of the nearest deadline [ms]
 
@@ -35,7 +35,7 @@ typedef struct {
 
 struct kernel_internals_t {
 
-    kernel_task_t tasks[KERNEL_MAX_TASKS];
+    kernel_task_t task[KERNEL_MAX_TASKS];
     uint32_t      task_count;
     uint32_t      current_task;                 // index of currently executing task
 
@@ -72,22 +72,21 @@ void kernel_start(void) {
     while (1) {
 
         // resume execution of the selected task if the task is not sleeping
-        kernel.tasks[kernel.current_task].psp = __kernel_switch_to_task(kernel.tasks[kernel.current_task].psp);
+        kernel.task[kernel.current_task].psp = __kernel_switch_to_task(kernel.task[kernel.current_task].psp);
 
         // update deadline. If the new deadline overflowed, re-initialize all deadlines
-        if ((uint64_t)kernel.tasks[kernel.current_task].deadline + (uint64_t)kernel.tasks[kernel.current_task].period > 0xffffffff) __kernel_init_deadlines();
-        else kernel.tasks[kernel.current_task].deadline += kernel.tasks[kernel.current_task].period;
+        if ((uint64_t)kernel.task[kernel.current_task].deadline + (uint64_t)kernel.task[kernel.current_task].period > 0xffffffff) __kernel_init_deadlines();
+        else kernel.task[kernel.current_task].deadline += kernel.task[kernel.current_task].period;
 
         // find the next task with the earliest deadtime to switch to
         kernel_time_t time = kernel_get_time_ms();
-        uint32_t lowest_val = 0xffffffff;
+        int32_t lowest_val = 0x7fffffff;
 
         for (int i = 0; i < kernel.task_count; i++) {
 
             if (i == kernel.current_task) continue;     // do not allow any task to execute twice in a row unless no other tasks are active
 
-            kernel_time_t remaining_time = kernel.tasks[i].deadline - time;
-            if (remaining_time & 0xf0000000) remaining_time = 0;                // the task missed its deadline (remaining time negative)
+            int32_t remaining_time = kernel.task[i].deadline - time;
 
             if (remaining_time < lowest_val) {
 
@@ -101,13 +100,16 @@ void kernel_start(void) {
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
 // creates new kernel task and initializes its stack
-void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_period) {
+void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t stack_size, kernel_time_t execution_period) {
+
+    if (stack == 0) return;
+    if (stack_size < 128) return;
 
     if (kernel.task_count >= KERNEL_MAX_TASKS) return;
     if (execution_period == 0) execution_period = 1;
 
     // set the task Process Stack Pointer to the end of the task's stack and allocate 17 words for preloading the exception frame
-    uint32_t* task_psp = kernel.tasks[kernel.task_count].stack + KERNEL_TASK_STACK_SIZE - 17;
+    uint32_t* task_psp = stack + (stack_size / sizeof(uint32_t)) - 17;//kernel.tasks[kernel.task_count].stack + KERNEL_TASK_STACK_SIZE - 17;
 
     // we need to preload the exception frame with data to be retreived by the __kernel_switch_to_task() function to properly enter into the task entry point
     *(task_psp + 16) = (uint32_t) 0x01000000;                       // this becomes the PSR (Program Status Register) upon first entry to the task (only Thumb bit set)
@@ -116,9 +118,9 @@ void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_peri
     *(task_psp +  8) = (uint32_t) KERNEL_EXCEPTION_RETURN_VALUE;    // this becomes the LR before entry to the task. Branching to KERNEL_EXCEPTION_RETURN_VALUE will cause the processor to pop the exception frame and restore the process state
     // the rest of the exception frame is general purpose registers and they remain unitialized until being saved after switching from the task
     
-    kernel.tasks[kernel.task_count].psp = task_psp;
-    kernel.tasks[kernel.task_count].period = execution_period;
-    kernel.tasks[kernel.task_count].deadline = kernel_get_time_ms() + execution_period;
+    kernel.task[kernel.task_count].psp = task_psp;
+    kernel.task[kernel.task_count].period = execution_period;
+    kernel.task[kernel.task_count].deadline = kernel_get_time_ms() + execution_period;
     kernel.task_count++;
 }
 
@@ -128,7 +130,7 @@ void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_peri
 void kernel_set_execution_period(uint32_t period_ms) {
 
     if (period_ms == 0) period_ms = 1;
-    kernel.tasks[kernel.current_task].period = period_ms;
+    kernel.task[kernel.current_task].period = period_ms;
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
@@ -137,8 +139,8 @@ void kernel_set_execution_period(uint32_t period_ms) {
 void kernel_sleep_ms(kernel_time_t duration_ms) {
 
     kernel_time_t start = kernel_get_time_ms();
-    uint32_t prev_period = kernel.tasks[kernel.current_task].period;
-    kernel.tasks[kernel.current_task].period = duration_ms;     // temporarily change execution period to make sure we don't miss the sleep duration end
+    uint32_t prev_period = kernel.task[kernel.current_task].period;
+    kernel.task[kernel.current_task].period = duration_ms;     // temporarily change execution period to make sure we don't miss the sleep duration end
 
     do {
 
@@ -146,7 +148,7 @@ void kernel_sleep_ms(kernel_time_t duration_ms) {
 
     } while (kernel_get_time_since(start) < duration_ms);
 
-    kernel.tasks[kernel.current_task].period = prev_period;
+    kernel.task[kernel.current_task].period = prev_period;
 }
 
 //---- INTERNAL FUNCTIONS ----------------------------------------------------------------------------------------------------------------------------------------
@@ -158,7 +160,7 @@ void kernel_sleep_ms(kernel_time_t duration_ms) {
 void __kernel_init_deadlines(void) {
 
     kernel_time_t time = kernel_get_time_ms();
-    for (int i = 0; i < kernel.task_count; i++) kernel.tasks[i].deadline = time + kernel.tasks[i].period;
+    for (int i = 0; i < kernel.task_count; i++) kernel.task[i].deadline = time + kernel.task[i].period;
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
@@ -166,7 +168,7 @@ void __kernel_init_deadlines(void) {
 // exit vector for a task
 void __kernel_terminate_current_task(void) {
 
-    kernel.tasks[kernel.current_task].period = 10000;
+    kernel.task[kernel.current_task].period = 10000;
 
     while (1) {
 

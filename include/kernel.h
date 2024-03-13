@@ -23,7 +23,7 @@ void kernel_init(uint32_t core_clock_frequency_hz);
 void kernel_start(void);
 
 // creates new kernel task and initializes its stack
-void kernel_create_task(void (*task_handler)(void), kernel_time_t execution_period);
+void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t stack_size, kernel_time_t execution_period);
 
 // sets the current task's maximum execution period [ms]. Kernel makes sure the task's execution is resumed within this window to avoid deadline misses
 void kernel_set_execution_period(uint32_t period_ms);
