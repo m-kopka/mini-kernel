@@ -87,6 +87,7 @@ void kernel_start(void) {
             if (i == kernel.current_task) continue;     // do not allow any task to execute twice in a row unless no other tasks are active
 
             int32_t remaining_time = kernel.task[i].deadline - time;
+            if (remaining_time < 0) __kernel_init_deadlines();          // reschedule if deadline was missed
 
             if (remaining_time < lowest_val) {
 
