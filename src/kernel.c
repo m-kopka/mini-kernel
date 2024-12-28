@@ -8,26 +8,26 @@
 
 //---- CONSTANTS -------------------------------------------------------------------------------------------------------------------------------------------------
 
-#define KERNEL_TASK_STACK_SIZE  256     // size of each task's stack in words
-#define KERNEL_MAX_TASKS        16      // max task count
+#define KERNEL_MAX_TASKS    32  // max task count
 
 // return to Thread mode and use the process stack for return
 #define KERNEL_EXCEPTION_RETURN_VALUE 0xFFFFFFFD
 
 //---- INTERNAL FUNCTION PROTOTYPES ------------------------------------------------------------------------------------------------------------------------------
 
-void      __kernel_init_stack(uint32_t *stack);
-uint32_t* __kernel_switch_to_task(uint32_t *task_stack);
-void      __kernel_init_deadlines(void);
-void      __kernel_terminate_current_task(void);
+void          __kernel_init_stack(uint32_t *stack);
+uint32_t*     __kernel_switch_to_task(uint32_t *task_stack);
+uint32_t      __compute_queue_size(void);
+kernel_time_t __compute_lcm(kernel_time_t a, kernel_time_t b);
+kernel_time_t __compute_gcd(kernel_time_t a, kernel_time_t b);
+void          __kernel_terminate_current_task(void);
 
 //---- STRUCTS ---------------------------------------------------------------------------------------------------------------------------------------------------
 
 typedef struct {
 
-    uint32_t *psp;                 // task's process stack pointer (caution: the stack must stay allocated)
-    kernel_time_t period;          // execution period, kernel tries to resume task's execution within this time window [ms]
-    kernel_time_t deadline;        // absolute time value of the nearest deadline [ms]
+    uint32_t *psp;          // task's process stack pointer (caution: the stack must stay allocated)
+    kernel_time_t period;   // execution period, kernel tries to resume task's execution within this time window [ms]
 
 } kernel_task_t;
 
@@ -37,7 +37,6 @@ struct kernel_internals_t {
 
     kernel_task_t task[KERNEL_MAX_TASKS];
     uint32_t      task_count;
-    uint32_t      current_task;                 // index of currently executing task
 
 } kernel;
 
@@ -63,44 +62,8 @@ void kernel_init(uint32_t core_clock_frequency_hz) {
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
-// starts the OS kernel
-void kernel_start(void) {
-
-    if (kernel.task_count == 0) while (1);      // no tasks to run
-    kernel.current_task = 0;
-
-    while (1) {
-
-        // resume execution of the selected task if the task is not sleeping
-        kernel.task[kernel.current_task].psp = __kernel_switch_to_task(kernel.task[kernel.current_task].psp);
-
-        // update deadline. If the new deadline overflowed, re-initialize all deadlines
-        if ((uint64_t)kernel.task[kernel.current_task].deadline + (uint64_t)kernel.task[kernel.current_task].period > 0xffffffff) __kernel_init_deadlines();
-        else kernel.task[kernel.current_task].deadline += kernel.task[kernel.current_task].period;
-
-        // find the next task with the earliest deadtime to switch to
-        kernel_time_t time = kernel_get_time_ms();
-        int32_t lowest_val = 0x7fffffff;
-
-        for (int i = 0; i < kernel.task_count; i++) {
-
-            if (i == kernel.current_task) continue;     // do not allow any task to execute twice in a row unless no other tasks are active
-
-            int32_t remaining_time = kernel.task[i].deadline - time;
-            if (remaining_time < 0) __kernel_init_deadlines();          // reschedule if deadline was missed
-
-            if (remaining_time < lowest_val) {
-
-                kernel.current_task = i;
-                lowest_val = remaining_time;
-            }
-        }
-    }
-}
-
-//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
-
 // creates new kernel task and initializes its stack
+// CAUTION: this function can only be called before the kernel starts (before calling kernel_start())
 void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t stack_size, kernel_time_t execution_period) {
 
     if (stack == 0) return;
@@ -110,7 +73,7 @@ void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t st
     if (execution_period == 0) execution_period = 1;
 
     // set the task Process Stack Pointer to the end of the task's stack and allocate 17 words for preloading the exception frame
-    uint32_t* task_psp = stack + (stack_size / sizeof(uint32_t)) - 17;//kernel.tasks[kernel.task_count].stack + KERNEL_TASK_STACK_SIZE - 17;
+    uint32_t* task_psp = stack + (stack_size / sizeof(uint32_t)) - 17;
 
     // we need to preload the exception frame with data to be retreived by the __kernel_switch_to_task() function to properly enter into the task entry point
     *(task_psp + 16) = (uint32_t) 0x01000000;                       // this becomes the PSR (Program Status Register) upon first entry to the task (only Thumb bit set)
@@ -121,17 +84,54 @@ void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t st
     
     kernel.task[kernel.task_count].psp = task_psp;
     kernel.task[kernel.task_count].period = execution_period;
-    kernel.task[kernel.task_count].deadline = kernel_get_time_ms() + execution_period;
     kernel.task_count++;
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
-// sets the current task's maximum execution period [ms]. Kernel makes sure the task's execution is resumed within this window to avoid deadline misses
-void kernel_set_execution_period(uint32_t period_ms) {
+// starts the OS kernel
+void kernel_start(void) {
 
-    if (period_ms == 0) period_ms = 1;
-    kernel.task[kernel.current_task].period = period_ms;
+    if (kernel.task_count == 0) while (1);      // no tasks to run
+
+    // initialize deadlines
+    kernel_time_t task_deadline[kernel.task_count];
+    for (int i = 0; i < kernel.task_count; i++) task_deadline[i] = kernel.task[i].period;
+
+    // calculate the hyper-period (number of cycles after which the execution pattern repeats) and allocate a queue of the required size
+    uint32_t queue_size = __compute_queue_size();
+    uint8_t task_queue[queue_size];
+    
+    // loop through the queue and fill it
+    for (int queue_pos = 0; queue_pos < queue_size; queue_pos++) {
+
+        // find the task with the earliest deadline
+        uint32_t earliest_deadline = 0xffffffff;
+        uint8_t next_task_index = 0;
+
+        for (int task_index = 0; task_index < kernel.task_count; task_index++) {
+
+            if (task_deadline[task_index] < earliest_deadline) {
+
+                next_task_index = task_index;
+                earliest_deadline = task_deadline[task_index];
+            }
+        }
+
+        task_queue[queue_pos] = next_task_index;                                    // add the selected task to the queue
+        task_deadline[next_task_index] += kernel.task[next_task_index].period;      // simulate execution of selected task to select a next one in the next iteration
+    }
+
+    // kernel main loop
+    // task_queue is periodic and as long as the execution periods don't change and no new tasks are added, it remains constant
+    while (1) {
+
+        for (int current_task = 0; current_task < queue_size; current_task++) {
+
+            // resume execution of the next task in the queue
+            kernel.task[task_queue[current_task]].psp = __kernel_switch_to_task(kernel.task[task_queue[current_task]].psp);
+        }
+    }
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
@@ -140,36 +140,60 @@ void kernel_set_execution_period(uint32_t period_ms) {
 void kernel_sleep_ms(kernel_time_t duration_ms) {
 
     kernel_time_t start = kernel_get_time_ms();
-    uint32_t prev_period = kernel.task[kernel.current_task].period;
-    kernel.task[kernel.current_task].period = duration_ms;     // temporarily change execution period to make sure we don't miss the sleep duration end
 
     do {
 
         kernel_yield();
 
     } while (kernel_get_time_since(start) < duration_ms);
-
-    kernel.task[kernel.current_task].period = prev_period;
 }
 
 //---- INTERNAL FUNCTIONS ----------------------------------------------------------------------------------------------------------------------------------------
 
-// updates deadlines of all task based on their execution period
-// when the CPU utilization is bellow 100%, the tasks get resumed well before deadline. This causes the deadline variable to increase in value faster than the system time counter
-// the deadline variable eventually overflows and due to the properties of subtraction it is not a problem. Howewer, the deadline variable overflowing twice before the system timer overflows is a problem
-// this function is called after detecting the first overflow of any task's deadline variable. It prevents double-overflow by putting the variables back to lower values close to the system timer.
-void __kernel_init_deadlines(void) {
+// returns the hyper-period (number of context switches after which the scheduling pattern repeats)
+// this is used to calculate the necessary task queue size
+uint32_t __compute_queue_size(void) {
 
-    kernel_time_t time = kernel_get_time_ms();
-    for (int i = 0; i < kernel.task_count; i++) kernel.task[i].deadline = time + kernel.task[i].period;
+    // compute the least common multiplier of all task periods
+    kernel_time_t lcm = kernel.task[0].period;
+    for (int i = 1; i < kernel.task_count; i++) lcm = __compute_lcm(lcm, kernel.task[i].period);
+
+    // after a hyper-period, the deadline of each task is period + lcm (deadline grows by lcm)
+    // thus, by dividing the final value (period + lcm) by period and subtracting one, we get a number of executions in a hyper-period (per each task)
+    // by summing up all the numbers of task executions, we get the total number of kernel executions in a hyper-period
+    uint32_t queue_size = 0;
+    for (int i = 0; i < kernel.task_count; i++) queue_size += (kernel.task[i].period + lcm) / kernel.task[i].period - 1;
+
+    return (queue_size);
+}
+
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
+// returns the least common multiplier of two numbers, used in the queue size calculation
+kernel_time_t __compute_lcm(kernel_time_t a, kernel_time_t b) {
+
+    return ((a * b) / __compute_gcd(a, b));
+}
+
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
+// returns the greatest common denominator of two numbers using the Euclidian algorithm, used in the lcm calculation
+kernel_time_t __compute_gcd(kernel_time_t a, kernel_time_t b) {
+
+    while (b != 0) {
+
+        kernel_time_t temp = b;
+        b = a % b;
+        a = temp;
+    }
+
+    return (a);
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
 // exit vector for a task
 void __kernel_terminate_current_task(void) {
-
-    kernel.task[kernel.current_task].period = 10000;
 
     while (1) {
 

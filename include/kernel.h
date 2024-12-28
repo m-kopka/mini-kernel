@@ -8,25 +8,24 @@
 */ 
 
 #include "stdint.h"
-#include "common_defs.h"        // this header needs to include the hardware platform's headers as well as the "CMSIS/core_m.." header file of the used core
+#include "stdbool.h"
+#include "common_defs.h"    // this header must include the hardware platform's headers as well as the "CMSIS/core_m.." header file of the used core
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-typedef uint32_t kernel_time_t;     // data type used to store kernel time
+typedef uint32_t kernel_time_t;     // data type used for storing kernel time
 
 //---- FUNCTIONS -------------------------------------------------------------------------------------------------------------------------------------------------
 
 // initializes the OS kernel. Kernel needs to know the core frequency to properly setup the SysTick timer
 void kernel_init(uint32_t core_clock_frequency_hz);
 
-// starts the OS kernel
-void kernel_start(void);
-
 // creates new kernel task and initializes its stack
+// CAUTION: this function can only be called before the kernel starts (before calling kernel_start())
 void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t stack_size, kernel_time_t execution_period);
 
-// sets the current task's maximum execution period [ms]. Kernel makes sure the task's execution is resumed within this window to avoid deadline misses
-void kernel_set_execution_period(uint32_t period_ms);
+// starts the OS kernel
+void kernel_start(void);
 
 // suspends current task for the specified time
 void kernel_sleep_ms(kernel_time_t duration_ms);
