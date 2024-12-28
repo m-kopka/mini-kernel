@@ -37,6 +37,9 @@ static inline kernel_time_t kernel_get_time_ms(void)  {
     return kernel_time_ms;
 }
 
+// returns time since start [us] (slow)
+uint64_t kernel_get_time_us(void);
+
 // returns system time passed since previous time [ms]
 static inline kernel_time_t kernel_get_time_since(kernel_time_t since)  {return (kernel_get_time_ms() - since);}
 

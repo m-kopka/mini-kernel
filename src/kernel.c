@@ -148,6 +148,22 @@ void kernel_sleep_ms(kernel_time_t duration_ms) {
     } while (kernel_get_time_since(start) < duration_ms);
 }
 
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
+// returns time since start [us] (slow)
+uint64_t kernel_get_time_us(void) {
+
+    uint32_t irq_status = __get_PRIMASK();
+    __disable_irq();    // disable interrupts to avoid corrupted values
+
+    // read the completed milliseconds + 1 and subtract the remaining time callculated from the progress of the SysTick timer
+    uint64_t time_us = (((uint64_t)kernel_get_time_ms() + 1) * 1000) - (SysTick->VAL * 1000 / SysTick->LOAD);
+
+    __set_PRIMASK(irq_status);   // return the interrupt enable to the previous value 
+
+    return (time_us);
+}
+
 //---- INTERNAL FUNCTIONS ----------------------------------------------------------------------------------------------------------------------------------------
 
 // returns the hyper-period (number of context switches after which the scheduling pattern repeats)
