@@ -13,6 +13,10 @@
 // return to Thread mode and use the process stack for return
 #define KERNEL_EXCEPTION_RETURN_VALUE 0xFFFFFFFD
 
+// on task creation, the kernel stores this magic value at the bottom of its stack
+// if the task overflows its stack, this value gets overvritten and the kernel detects it
+#define KERNEL_STACK_CANARY_VALUE 0x4BC8AE00
+
 //---- INTERNAL FUNCTION PROTOTYPES ------------------------------------------------------------------------------------------------------------------------------
 
 void          __kernel_init_stack(uint32_t *stack);
@@ -27,6 +31,7 @@ void          __kernel_terminate_current_task(void);
 typedef struct {
 
     uint32_t *psp;          // task's process stack pointer (caution: the stack must stay allocated)
+    uint32_t *stack_end;    // end of task's stack, used in stack overflow detection
     kernel_time_t period;   // execution period, kernel tries to resume task's execution within this time window [ms]
 
 } kernel_task_t;
@@ -67,7 +72,7 @@ void kernel_init(uint32_t core_clock_frequency_hz) {
 void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t stack_size, kernel_time_t execution_period) {
 
     if (stack == 0) return;
-    if (stack_size < 128) return;
+    if (stack_size < 64) return;
 
     if (kernel.task_count >= KERNEL_MAX_TASKS) return;
     if (execution_period == 0) execution_period = 1;
@@ -82,7 +87,11 @@ void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t st
     *(task_psp +  8) = (uint32_t) KERNEL_EXCEPTION_RETURN_VALUE;    // this becomes the LR before entry to the task. Branching to KERNEL_EXCEPTION_RETURN_VALUE will cause the processor to pop the exception frame and restore the process state
     // the rest of the exception frame is general purpose registers and they remain unitialized until being saved after switching from the task
     
+    // store the stack canary at the end of the task's stack
+    *(stack + 0) = KERNEL_STACK_CANARY_VALUE;
+    
     kernel.task[kernel.task_count].psp = task_psp;
+    kernel.task[kernel.task_count].stack_end = stack;
     kernel.task[kernel.task_count].period = execution_period;
     kernel.task_count++;
 }
@@ -126,10 +135,13 @@ void kernel_start(void) {
     // task_queue is periodic and as long as the execution periods don't change and no new tasks are added, it remains constant
     while (1) {
 
-        for (int current_task = 0; current_task < queue_size; current_task++) {
+        for (int queue_pos = 0; queue_pos < queue_size; queue_pos++) {
 
             // resume execution of the next task in the queue
-            kernel.task[task_queue[current_task]].psp = __kernel_switch_to_task(kernel.task[task_queue[current_task]].psp);
+            kernel.task[task_queue[queue_pos]].psp = __kernel_switch_to_task(kernel.task[task_queue[queue_pos]].psp);
+
+            // check if the stack canary was overwritten
+            if (*kernel.task[task_queue[queue_pos]].stack_end != KERNEL_STACK_CANARY_VALUE) return;
         }
     }
 }
