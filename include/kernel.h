@@ -15,7 +15,7 @@
 
 typedef uint32_t kernel_time_t;     // data type used for storing kernel time
 
-//---- FUNCTIONS -------------------------------------------------------------------------------------------------------------------------------------------------
+//---- INITIALIZATION FUNCTIONS ----------------------------------------------------------------------------------------------------------------------------------
 
 // initializes the OS kernel. Kernel needs to know the core frequency to properly setup the SysTick timer
 void kernel_init(uint32_t core_clock_frequency_hz);
@@ -27,8 +27,15 @@ void kernel_create_task(void (*task_handler)(void), uint32_t *stack, uint32_t st
 // starts the OS kernel
 void kernel_start(void);
 
+//---- KERNEL SERVICE FUNCTIONS ----------------------------------------------------------------------------------------------------------------------------------
+
+// yield execution to the kernel
+static inline void kernel_yield(void) {asm("svc 0");}
+
 // suspends current task for the specified time
 void kernel_sleep_ms(kernel_time_t duration_ms);
+
+//---- TIME-KEEPING FUNCTIONS ------------------------------------------------------------------------------------------------------------------------------------
 
 // returns time since start [ms]
 static inline kernel_time_t kernel_get_time_ms(void)  {
@@ -37,14 +44,17 @@ static inline kernel_time_t kernel_get_time_ms(void)  {
     return kernel_time_ms;
 }
 
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
+// returns system time passed since previous time [ms]
+static inline kernel_time_t kernel_get_time_since_ms(kernel_time_t since)  {return (kernel_get_time_ms() - since);}
+
 // returns time since start [us] (slow)
 uint64_t kernel_get_time_us(void);
 
-// returns system time passed since previous time [ms]
-static inline kernel_time_t kernel_get_time_since(kernel_time_t since)  {return (kernel_get_time_ms() - since);}
+//---- OTHER KERNEL SERVICES -------------------------------------------------------------------------------------------------------------------------------------
 
-// yield execution to the kernel
-static inline void kernel_yield(void) {asm("svc 0");}
+#include "kernel-timer.h"
 
 //----------------------------------------------------------------------------------------------------------------------------------------------------------------
 

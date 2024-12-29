@@ -157,7 +157,7 @@ void kernel_sleep_ms(kernel_time_t duration_ms) {
 
         kernel_yield();
 
-    } while (kernel_get_time_since(start) < duration_ms);
+    } while (kernel_get_time_since_ms(start) < duration_ms);
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
