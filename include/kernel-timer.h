@@ -38,10 +38,18 @@ static inline void kernel_timer_stop(kernel_timer_t *timer) {
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 
+// returns true if the timer is running
+static inline kernel_time_t kernel_timer_is_running(kernel_timer_t *timer) {
+
+    return (timer->duration_ms > 0);
+}
+
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
 // returns time since the timer start [ms], returns 0 if the timer is stopped
 static inline kernel_time_t kernel_timer_get_time_ms(kernel_timer_t *timer) {
 
-    if (timer->duration_ms == 0) return 0;
+    if (!kernel_timer_is_running(timer)) return 0;
     return (kernel_get_time_since_ms(timer->start_time));
 }
 
@@ -50,7 +58,7 @@ static inline kernel_time_t kernel_timer_get_time_ms(kernel_timer_t *timer) {
 // returns true if the timer is expired, a stopped timer is always considered not expired
 static inline bool kernel_timer_is_expired(kernel_timer_t *timer) {
 
-    if (timer->duration_ms == 0) return false;
+    if (!kernel_timer_is_running(timer)) return 0;
     return (kernel_get_time_since_ms(timer->start_time) >= timer->duration_ms);
 }
 
