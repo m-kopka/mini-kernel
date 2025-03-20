@@ -62,7 +62,10 @@ void kernel_init(uint32_t core_clock_frequency_hz) {
 
     // init the SysTick timer to generate an interrupt every millisecond
     SysTick_Config(core_clock_frequency_hz / 1000);
-    NVIC_SetPriority(SysTick_IRQn, 3);
+    NVIC_SetPriority(SysTick_IRQn, 15);
+
+    // set SVC priority to low
+    NVIC_SetPriority(SVCall_IRQn, 15);
 }
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
